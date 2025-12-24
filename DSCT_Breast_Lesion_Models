@@ -1,8 +1,13 @@
-# -*- coding: utf-8 -*-
 """
 MODULE 1 – Minimal invasive Scheme B
-FULL FINAL VERSION (UPGRADED)
-Table 2, Table 3, Table S2–S9 + Parameter ROC evaluation
+FINAL INTEGRATED VERSION (CLEAN & SAFE)
+
+Outputs:
+- Table 2 (Clinical characteristics)
+- Table 3 (DSCT parameters: AP + VP, journal format)
+- Table S2–S4 (Univariable ROC)
+- ROC curves for clinical / AP / VP
+- sig_clinical / sig_dsct for MODULE 2
 """
 
 import os
@@ -16,7 +21,6 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, roc_curve
-from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 # ======================================================
 # Config
@@ -116,11 +120,11 @@ clinical_categorical = {
 def univariate_analysis_train(X, y):
     rows = []
     for col in clinical_features + dsct_features:
-        x0 = X.loc[y==0, col]
-        x1 = X.loc[y==1, col]
+        x0 = X.loc[y == 0, col]
+        x1 = X.loc[y == 1, col]
         if col in clinical_categorical:
             tab = pd.crosstab(X[col], y)
-            if tab.shape == (2,2) and (tab.values < 5).any():
+            if tab.shape == (2, 2) and (tab.values < 5).any():
                 _, p = stats.fisher_exact(tab.values)
             else:
                 _, p, _, _ = stats.chi2_contingency(tab)
@@ -139,36 +143,100 @@ uni_df.to_excel(
     index=False
 )
 
+# ======================================================
+# 3b. Significant variables (FOR MODULE 2 – DO NOT DELETE)
+# ======================================================
 sig_clinical = uni_df.query(
-    "group=='Clinical' and p_value<0.05"
+    "group == 'Clinical' and p_value < 0.05"
 )["variable"].tolist()
+
 sig_dsct = uni_df.query(
-    "group=='DSCT' and p_value<0.05"
+    "group == 'DSCT' and p_value < 0.05"
 )["variable"].tolist()
 
 # ======================================================
-# 4. Table 2 / Table 3
+# 4. Table 2 – Clinical characteristics
 # ======================================================
-def build_table(X, y, vars_):
+def build_table2(X, y, vars_):
     rows = []
     for col in vars_:
         if col in clinical_categorical:
             tab = pd.crosstab(X[col], y)
             _, p, _, _ = stats.chi2_contingency(tab)
         else:
-            p = auto_test_continuous(X.loc[y==0,col], X.loc[y==1,col])
+            p = auto_test_continuous(X.loc[y == 0, col], X.loc[y == 1, col])
         rows.append([col, p])
-    return pd.DataFrame(rows, columns=["Variable","P value"])
+    return pd.DataFrame(rows, columns=["Variable", "P value"])
 
-build_table(X_all, y_all, clinical_features).to_excel(
+build_table2(X_all, y_all, clinical_features).to_excel(
     os.path.join(OUTPUT_DIR, "Table2_Clinical.xlsx"), index=False
-)
-build_table(X_all, y_all, dsct_features).to_excel(
-    os.path.join(OUTPUT_DIR, "Table3_DSCT.xlsx"), index=False
 )
 
 # ======================================================
-# 5. Table S2–S4: Univariable ROC
+# 5. Table 3 – DSCT parameters (AP + VP, journal format)
+# ======================================================
+def is_normal(x):
+    return len(x) >= 3 and stats.shapiro(x)[1] >= 0.05
+
+def summary_normal(x):
+    return f"{x.mean():.1f} ± {x.std():.1f}"
+
+def summary_nonnormal(x):
+    return f"{x.median():.3f} ({x.min():.3f}, {x.max():.3f})"
+
+def format_p(p):
+    return "<0.001" if p < 0.001 else f"{p:.3f}"
+
+def analyze_dsct(var):
+    x_all = X_all[var].dropna()
+    x0 = X_all.loc[y_all == 0, var].dropna()
+    x1 = X_all.loc[y_all == 1, var].dropna()
+
+    normal = is_normal(x0) and is_normal(x1)
+
+    if normal:
+        stat, p = stats.ttest_ind(x0, x1, equal_var=False)
+        total = summary_normal(x_all)
+        benign = summary_normal(x0)
+        malignant = summary_normal(x1)
+        stat_val = f"{stat:.3f}"
+    else:
+        stat, p = stats.mannwhitneyu(x0, x1, alternative="two-sided")
+        total = summary_nonnormal(x_all)
+        benign = summary_nonnormal(x0)
+        malignant = summary_nonnormal(x1)
+        stat_val = f"{stat:.3f}"
+
+    return total, benign, malignant, stat_val, format_p(p)
+
+rows = []
+rows.append(["AP", "", "", "", "", ""])
+for v in arterial_vars:
+    rows.append([v, *analyze_dsct(v)])
+
+rows.append(["VP", "", "", "", "", ""])
+for v in venous_vars:
+    rows.append([v, *analyze_dsct(v)])
+
+table3 = pd.DataFrame(
+    rows,
+    columns=[
+        "Variable",
+        f"Total (N={len(y_all)})",
+        f"Benign (N={(y_all==0).sum()})",
+        f"Malignant (N={(y_all==1).sum()})",
+        "F-value / Z-value",
+        "P-value"
+    ]
+)
+
+table3.to_excel(
+    os.path.join(OUTPUT_DIR, "Table3_DSCT_Parameters.xlsx"),
+    index=False
+)
+
+# ======================================================
+# 6. Table S2–S4: Univariable ROC
 # ======================================================
 def roc_with_ci(y, s, n_boot=2000):
     rng = np.random.RandomState(RANDOM_STATE)
@@ -179,12 +247,12 @@ def roc_with_ci(y, s, n_boot=2000):
             continue
         aucs.append(roc_auc_score(y.iloc[idx], s.iloc[idx]))
     auc = roc_auc_score(y, s)
-    return auc, np.percentile(aucs,2.5), np.percentile(aucs,97.5)
+    return auc, np.percentile(aucs, 2.5), np.percentile(aucs, 97.5)
 
 def best_cutoff(y, s):
     fpr, tpr, thr = roc_curve(y, s)
-    idx = np.argmax(tpr-fpr)
-    return tpr[idx], 1-fpr[idx], thr[idx]
+    idx = np.argmax(tpr - fpr)
+    return tpr[idx], 1 - fpr[idx], thr[idx]
 
 def build_auc_table(vars_, filename):
     rows = []
@@ -195,23 +263,24 @@ def build_auc_table(vars_, filename):
         rows.append([v, f"{auc:.3f} ({lo:.3f}-{hi:.3f})", sen, spe, cut])
     pd.DataFrame(
         rows,
-        columns=["Variable","AUC (95% CI)","Sensitivity","Specificity","Cutoff"]
+        columns=["Variable", "AUC (95% CI)", "Sensitivity", "Specificity", "Cutoff"]
     ).to_excel(os.path.join(OUTPUT_DIR, filename), index=False)
 
 build_auc_table(clinical_features, "Table_S2_Clinical_Performance.xlsx")
 build_auc_table(arterial_vars, "Table_S3_Arterial_DSCT_Performance.xlsx")
 build_auc_table(venous_vars, "Table_S4_Venous_DSCT_Performance.xlsx")
+
 # ======================================================
-# 5. Parameter performance – ROC curves
+# 7. ROC curves
 # ======================================================
 def plot_multi_roc(X, y, vars_, title, fname):
-    plt.figure(figsize=(6,6), dpi=600)
+    plt.figure(figsize=(6, 6), dpi=600)
     for v in vars_:
         s = X[v].astype(float)
-        fpr,tpr,_ = roc_curve(y, s)
+        fpr, tpr, _ = roc_curve(y, s)
         auc = roc_auc_score(y, s)
         plt.plot(fpr, tpr, lw=2, label=f"{v} (AUC={auc:.3f})")
-    plt.plot([0,1],[0,1],'--',color='gray')
+    plt.plot([0, 1], [0, 1], '--', color='gray')
     plt.xlabel("1 - Specificity")
     plt.ylabel("Sensitivity")
     plt.title(title)
@@ -221,20 +290,12 @@ def plot_multi_roc(X, y, vars_, title, fname):
     plt.savefig(os.path.join(OUTPUT_DIR, fname), dpi=600)
     plt.close()
 
-plot_multi_roc(
-    X_all, y_all, clinical_features,
-    "Qualitative", "ROC_Qualitative_Clinical.tiff"
-)
-plot_multi_roc(
-    X_all, y_all, arterial_vars,
-    "AP", "ROC_DSCT_Arterial.tiff"
-)
-plot_multi_roc(
-    X_all, y_all, venous_vars,
-    "VP", "ROC_DSCT_Venous.tiff"
-)
+plot_multi_roc(X_all, y_all, clinical_features, "Clinical", "ROC_Clinical.tiff")
+plot_multi_roc(X_all, y_all, arterial_vars, "AP", "ROC_DSCT_Arterial.tiff")
+plot_multi_roc(X_all, y_all, venous_vars, "VP", "ROC_DSCT_Venous.tiff")
 
-print("\n===== MODULE 1 COMPLETED (UPGRADED & FINAL) =====")
+print("\n===== MODULE 1 COMPLETED (FINAL & MODULE-2-READY) =====")
+
 
 # 模块 2 —— 共线性分析 + LASSO 特征筛选（Clinical / DSCT / Hybrid）
 # （FINAL INTEGRATED VERSION, SAFE & REVIEWER-READY）
@@ -1009,3 +1070,4 @@ coef_table.to_csv(
 )
 
 print("\nCoefficient table saved: Hybrid_Nomogram_Coefficients_Final.csv")
+
